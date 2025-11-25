@@ -3,6 +3,7 @@
 #include <Wire.h>
 
 #include "FrcBleService.h"
+#include "SettingsBleService.h"
 #include "SensirionUptBleServer.h"
 
 #include <Sensirion_UPT_Core.h>
@@ -28,6 +29,7 @@ static int64_t lastMeasurementTimeMs = 0;
 
 ble_server::NimBLELibraryWrapper lib;
 ble_server::FrcBleService frcBleService(lib);
+ble_server::SettingsBleService settingsBleService(lib);
 ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 
 void frcRequestCallback(const uint16_t referenceCo2Level);
@@ -93,7 +95,11 @@ void setup()
   ESP_LOGI(TAG, "Starting BleServer...");
 #endif
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
+  settingsBleService.setEnableAltDeviceName(true);
+  settingsBleService.setEnableWifiSettings(false);
+  settingsBleService.setAltDeviceName("OpenCO2-Mini");
   uptBleServer.registerBleServiceProvider(frcBleService);
+  uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.begin();
 
   led.blinkGreen();
