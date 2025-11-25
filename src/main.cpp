@@ -7,20 +7,14 @@
 
 #include <Sensirion_UPT_Core.h>
 
-// macro definitions
-// make sure that we use the proper definition of NO_ERROR
-#ifdef NO_ERROR
-#undef NO_ERROR
-#endif
-#define NO_ERROR 0
+#include "config.h"
+#include "led_utils.h"
 
 using namespace sensirion::upt;
+static auto constexpr TAG = "MAIN";
 
 SensirionI2cStcc4 stcc4;
-
-ble_server::NimBLELibraryWrapper lib;
-ble_server::FrcBleService frcBleService(lib);
-ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
+LedUtils led;
 
 static int16_t error;
 
@@ -29,74 +23,140 @@ int16_t stcc4_co2 = 0;
 float stcc4_temp = 0.0;
 float stcc4_humi = 0.0;
 uint16_t stcc4_status = 0;
-    
 
 static int64_t lastMeasurementTimeMs = 0;
-static int measurementIntervalMs = 1000;
 
-void frcRequestCallback(const uint16_t referenceCo2Level) {
-  if(!frcRequested){
-    frcRequested = true;
-    int16_t correction;
-    stcc4.performForcedRecalibration(referenceCo2Level, correction);
-    frcRequested = false;
-  }
-}
+ble_server::NimBLELibraryWrapper lib;
+ble_server::FrcBleService frcBleService(lib);
+ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000); // Wait for Serial monitor to start
+void frcRequestCallback(const uint16_t referenceCo2Level);
 
-  Wire.begin();
+void setup()
+{
+#if SERIAL_DEBUG_ENABLE
+  Serial.begin(SERIAL_BAUDRATE);
+  while (!Serial)
+    delay(500);
+  ESP_LOGI(TAG, "Serial connected!");
+#endif
+
+  led.setToStaticWhite();
+
+  Wire.begin(SDA_PIN, SCL_PIN);
   stcc4.begin(Wire, STCC4_I2C_ADDR_64);
 
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Stopping measurement...");
+#endif
   error = stcc4.stopContinuousMeasurement();
-  if (error != NO_ERROR) {
-      // Blink red
-      return;
+  if (error != NO_ERROR)
+  {
+    led.blinkRed();
+#if SERIAL_DEBUG_ENABLE
+    ESP_LOGE(TAG, "Error while calling stopContinuousMeasurement.");
+#endif
+    return;
   }
 
+  led.blinkGreen();
+
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Request conditioning...");
+#endif
+  error = stcc4.performConditioning();
+  if (error != NO_ERROR)
+  {
+    led.blinkRed();
+#if SERIAL_DEBUG_ENABLE
+    ESP_LOGE(TAG, "Error while calling performConditioning.");
+#endif
+    return;
+  }
+  led.blinkGreen();
+
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Starting measurement...");
+#endif
   error = stcc4.startContinuousMeasurement();
-  if (error != NO_ERROR) {
-      // Blink red
-      return;
+  if (error != NO_ERROR)
+  {
+    led.blinkRed();
+#if SERIAL_DEBUG_ENABLE
+    ESP_LOGE(TAG, "Error while calling startContinuousMeasurement.");
+#endif
+    return;
   }
+  led.blinkGreen();
 
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Starting BleServer...");
+#endif
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.begin();
 
-  // Blink Blue
+  led.blinkGreen();
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Setup done.");
+#endif
+
+  // Wait for first measurement
+  delay(1000);
 }
 
-void loop() {
-  delay(1000);
+void loop()
+{
+  // Read measurement every STCC4_MEASUREMENT_INTERVAL_MS when no FRC is ongoing
+  if (millis() - lastMeasurementTimeMs >= STCC4_MEASUREMENT_INTERVAL_MS &&
+      !frcRequested)
+  {
 
-  if (millis() - lastMeasurementTimeMs >= measurementIntervalMs &&
-      !frcRequested) {
-    
-    // Read measured values
     error = stcc4.readMeasurement(stcc4_co2, stcc4_temp, stcc4_humi, stcc4_status);
+    if (error != NO_ERROR)
+    {
+      // Clock could have stretched, wait and try again
+#if SERIAL_DEBUG_ENABLE
+      char errormessage[128];
+      errorToString(error, errormessage, sizeof(errormessage));
+      ESP_LOGE(TAG, "Error while calling readMeasurement. error code: %d, message:\n%s", error, errormessage);
+#endif
+      delay(100);
+      return;
+    }
+
     lastMeasurementTimeMs = millis();
 
     uptBleServer.writeValueToCurrentSample(
-         stcc4_temp, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
+        stcc4_temp, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
     uptBleServer.writeValueToCurrentSample(
-         stcc4_humi, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
+        stcc4_humi, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
     uptBleServer.writeValueToCurrentSample(
-         stcc4_co2, core::SignalType::CO2_PARTS_PER_MILLION);
+        stcc4_co2, core::SignalType::CO2_PARTS_PER_MILLION);
     uptBleServer.commitSample();
-    
 
-    if (error != NO_ERROR) {
-      // Blink red
-    }
-
-    // Update LED color
+    led.setColorFromCo2(stcc4_co2);
   }
 
   // handle download requests
   uptBleServer.handleDownload();
 
-  delay(20);
+  delay(100);
+}
+
+void frcRequestCallback(const uint16_t referenceCo2Level)
+{
+  if (!frcRequested)
+  {
+#if SERIAL_DEBUG_ENABLE
+    ESP_LOGI(TAG, "FRC requested...");
+#endif
+    frcRequested = true;
+    int16_t correction;
+    stcc4.performForcedRecalibration(referenceCo2Level, correction);
+    frcRequested = false;
+#if SERIAL_DEBUG_ENABLE
+    ESP_LOGI(TAG, "FRC completed with correction value: %d", correction);
+#endif
+  }
 }
