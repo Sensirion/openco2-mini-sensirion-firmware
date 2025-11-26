@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SensirionI2cStcc4.h>
 #include <Wire.h>
+#include <Preferences.h>
 
 #include "FrcBleService.h"
 #include "SettingsBleService.h"
@@ -16,6 +17,7 @@ static auto constexpr TAG = "MAIN";
 
 SensirionI2cStcc4 stcc4;
 LedUtils led;
+Preferences persist; 
 
 static int16_t error;
 
@@ -33,6 +35,7 @@ ble_server::SettingsBleService settingsBleService(lib);
 ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 
 void frcRequestCallback(const uint16_t referenceCo2Level);
+void nameChangeRequestCallback(const std::string& newName);
 
 void setup()
 {
@@ -91,13 +94,18 @@ void setup()
   }
   led.blinkGreen();
 
+  // Check for persisted ble gadget name
+  persist.begin("ble-settings", false);
+  auto name = persist.getString("alt-device-name", BLE_DEFAULT_DEVICE_NAME);
+
 #if SERIAL_DEBUG_ENABLE
   ESP_LOGI(TAG, "Starting BleServer...");
 #endif
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
   settingsBleService.setEnableAltDeviceName(true);
   settingsBleService.setEnableWifiSettings(false);
-  settingsBleService.setAltDeviceName("OpenCO2-Mini");
+  settingsBleService.setAltDeviceName(name.c_str());
+  settingsBleService.registerDeviceNameChangeCallback(nameChangeRequestCallback);
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.begin();
@@ -165,4 +173,11 @@ void frcRequestCallback(const uint16_t referenceCo2Level)
     ESP_LOGI(TAG, "FRC completed with correction value: %d", correction);
 #endif
   }
+}
+
+void nameChangeRequestCallback(const std::string& newName){
+#if SERIAL_DEBUG_ENABLE
+  ESP_LOGI(TAG, "Device name change requested: %s. Persisting new name...", newName.c_str());
+#endif
+  persist.putString("alt-device-name", newName.c_str());
 }
