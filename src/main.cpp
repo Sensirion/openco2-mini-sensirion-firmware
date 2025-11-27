@@ -155,7 +155,10 @@ void loop()
   // handle download requests
   uptBleServer.handleDownload();
 
-  delay(100);
+  // light sleep to save power
+  // esp_sleep_enable_timer_wakeup(400 * 1000);
+  // esp_light_sleep_start();
+  delay(400);
 }
 
 void frcRequestCallback(const uint16_t referenceCo2Level)
