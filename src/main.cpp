@@ -3,10 +3,10 @@
 
 #include "BleConnectService.h"
 #include "FrcBleService.h"
+#include "LedUtils.h"
 #include "SensirionUptBleServer.h"
 #include "SettingsBleService.h"
 #include "config.h"
-#include "led_utils.h"
 
 using namespace sensirion::upt;
 static auto constexpr TAG = "MAIN";
@@ -16,10 +16,10 @@ Preferences persist;
 LedUtils led;
 
 bool frcRequested = false;
-int16_t stcc4_co2 = 0;
-float stcc4_temp = 0.0;
-float stcc4_humi = 0.0;
-uint16_t stcc4_status = 0;
+int16_t stcc4Co2 = 0;
+float stcc4Temperature = 0.0;
+float stcc4Humidity = 0.0;
+uint16_t stcc4Status = 0;
 
 static int64_t lastMeasurementTimeMs = 0;
 
@@ -29,28 +29,66 @@ ble_server::SettingsBleService settingsBleService(lib);
 ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 ble_server::BleConnectService bleConnectService(lib, led);
 
-void frcRequestCallback(const uint16_t referenceCo2Level);
+void frcRequestCallback(int16_t referenceCo2Level);
 void nameChangeRequestCallback(const std::string &newName);
+int16_t measureAndUpdate();
+void checkAndSleep(bool hasError);
+void setupStcc4Measurement();
+void setupBleServer();
 
 void setup() {
-  int16_t error;
+  delay(1000); // wait for serial
 
+  // Setup I2C, LED and Persistence
   Wire.begin(SDA_PIN, SCL_PIN);
   stcc4.begin(Wire, STCC4_I2C_ADDR_64);
   persist.begin("ble-settings", false);
   led.begin();
 
-  String name = persist.getString("alt-device-name", BLE_DEFAULT_DEVICE_NAME);
+  // initialize measurement for STCC4
+  setupStcc4Measurement();
 
-  ESP_LOGI(TAG, "Stopping measurement...");
-  error = stcc4.stopContinuousMeasurement();
+  // start BLE server for integration with MyAmbience
+  setupBleServer();
+
+  // delay until the first measurement is ready
+  delay(1000);
+}
+
+void loop() {
+  int16_t error = NO_ERROR;
+  if (millis() - lastMeasurementTimeMs >= STCC4_MEASUREMENT_INTERVAL_MS &&
+      !frcRequested) {
+    error = measureAndUpdate();
+  }
+
+  // handle download requests
+  uptBleServer.handleDownload();
+  delay(STCC4_MEASURE_CHECK_MS);
+
+  // go to sleep if necessary
+  checkAndSleep(error != NO_ERROR);
+}
+
+/**
+ * Configure and start the STCC4 sensor measurement sequence.
+ *
+ * Steps
+ * - Stop any ongoing continuous measurement.
+ * - Perform the mandatory sensor conditioning.
+ * - Start a new continuous measurement.
+ *
+ * Error handling
+ * - On any driver error, the LED blinks red and the function returns early.
+ */
+void setupStcc4Measurement() {
+  int16_t error = stcc4.stopContinuousMeasurement();
   if (error != NO_ERROR) {
     led.blinkRed();
     ESP_LOGE(TAG, "Error while calling stopContinuousMeasurement.");
     return;
   }
 
-  ESP_LOGI(TAG, "Request conditioning...");
   error = stcc4.performConditioning();
   if (error != NO_ERROR) {
     led.blinkRed();
@@ -65,8 +103,22 @@ void setup() {
     ESP_LOGE(TAG, "Error while calling startContinuousMeasurement.");
     return;
   }
+}
+/**
+ * Initialize and start the BLE server and services used by MyAmbience.
+ *
+ * Behavior
+ * - Restores the alternative device name from non‑volatile storage
+ *   (or uses the default).
+ * - Configures connection timing, registers the FRC, Settings, and
+ *   connection‑feedback services, and starts advertising.
+ */
+void setupBleServer() {
+  const String name =
+      persist.getString("alt-device-name", BLE_DEFAULT_DEVICE_NAME);
 
-  ESP_LOGI(TAG, "Starting BleServer...");
+  uptBleServer.setDefaultConnectionTimeout(30000);
+  lib.setPreferredConnectionInterval(20, 1000);
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
   settingsBleService.setAltDeviceName(name.c_str());
   settingsBleService.setEnableWifiSettings(false);
@@ -76,45 +128,80 @@ void setup() {
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.registerBleServiceProvider(bleConnectService);
   uptBleServer.begin();
-
-  delay(1000);
-
   ESP_LOGI(TAG, "Setup done. Device is advertised with name = %s",
            name.c_str());
 }
 
-void loop() {
-  if (millis() - lastMeasurementTimeMs >= STCC4_MEASUREMENT_INTERVAL_MS && !frcRequested) {
-    int16_t error =
-        stcc4.readMeasurement(stcc4_co2, stcc4_temp, stcc4_humi, stcc4_status);
-    if (error != NO_ERROR) {
-      char errormessage[128];
-      errorToString(error, errormessage, sizeof(errormessage));
-      ESP_LOGE(
-          TAG,
-          "Error while calling readMeasurement. error code: %d, message:\n%s",
-          error, errormessage);
-      delay(100);
-    }
-
-    uptBleServer.writeValueToCurrentSample(
-        stcc4_temp, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
-    uptBleServer.writeValueToCurrentSample(
-        stcc4_humi, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
-    uptBleServer.writeValueToCurrentSample(
-        stcc4_co2, core::SignalType::CO2_PARTS_PER_MILLION);
-    uptBleServer.commitSample();
-    lastMeasurementTimeMs = millis();
-    led.setColorFromCo2(stcc4_co2);
+/**
+ * Read a measurement from the STCC4 sensor and publish it via BLE.
+ *
+ * Data flow
+ * - Reads temperature, humidity and CO2 from the sensor.
+ * - On success, updates the timestamp, writes the values to the current
+ *   UPT BLE sample, commits the sample, and updates the LED color derived
+ *   from the CO2 concentration.
+ *
+ * Error handling
+ * - On driver error, logs the error string and returns the error code
+ *   without updating the BLE sample.
+ *
+ * @return NO_ERROR on success, otherwise the STCC4 driver error code.
+ */
+int16_t measureAndUpdate() {
+  const int16_t error = stcc4.readMeasurement(stcc4Co2, stcc4Temperature,
+                                              stcc4Humidity, stcc4Status);
+  if (error != NO_ERROR) {
+    char errormessage[128];
+    errorToString(error, errormessage, sizeof(errormessage));
+    ESP_LOGE(
+        TAG,
+        "Error while calling readMeasurement. error code: %d, message:\n%s",
+        error, errormessage);
+    return error;
   }
 
-  // handle download requests
-  uptBleServer.handleDownload();
+  lastMeasurementTimeMs = millis();
 
-  delay(20);
+  uptBleServer.writeValueToCurrentSample(
+      stcc4Temperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
+  uptBleServer.writeValueToCurrentSample(
+      stcc4Humidity, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
+  uptBleServer.writeValueToCurrentSample(
+      stcc4Co2, core::SignalType::CO2_PARTS_PER_MILLION);
+  uptBleServer.commitSample();
+
+  led.setColorFromCo2(stcc4Co2);
+  return error;
 }
 
-void frcRequestCallback(const uint16_t referenceCo2Level) {
+/**
+ * Enter light sleep until the next measurement, if safe to do so.
+ *
+ * Conditions
+ * - Skips sleeping when there are connected BLE devices or when the
+ *   last measurement resulted in an error (to allow quick retry/handling).
+ */
+void checkAndSleep(const bool hasError) {
+  if (uptBleServer.hasConnectedDevices() || hasError) {
+    return;
+  }
+
+  // Sleep until the next measurement is ready
+  constexpr uint64_t sleepTimeMs =
+      STCC4_MEASUREMENT_INTERVAL_MS - STCC4_MEASURE_CHECK_MS;
+  esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);
+  esp_light_sleep_start();
+}
+
+/**
+ * Callback invoked on Forced Recalibration (FRC) request from BLE.
+ *
+ * Behavior
+ * - Guards against concurrent FRC execution via the global flag.
+ * - Triggers the STCC4 forced recalibration using the provided
+ *   reference CO2 level and logs the resulting correction value.
+ */
+void frcRequestCallback(const int16_t referenceCo2Level) {
   if (frcRequested)
     return;
 
@@ -126,6 +213,13 @@ void frcRequestCallback(const uint16_t referenceCo2Level) {
   ESP_LOGI(TAG, "FRC completed with correction value: %d", correction);
 }
 
+/**
+ * Callback to persist a requested device name change.
+ *
+ * Behavior
+ * - Stores the new alternative device name in Preferences so it
+ *   survives reboots; BLE service picks it up on next start.
+ */
 void nameChangeRequestCallback(const std::string &newName) {
   ESP_LOGI(TAG, "Device name change requested: %s. Persisting new name...",
            newName.c_str());
