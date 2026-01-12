@@ -210,9 +210,27 @@ void frcRequestCallback(const int16_t referenceCo2Level) {
   ESP_LOGI(TAG, "FRC requested...");
   frcRequested = true;
   int16_t correction;
-  stcc4.performForcedRecalibration(referenceCo2Level, correction);
+  int16_t error = stcc4.stopContinuousMeasurement();
+  if (error != NO_ERROR) {
+    led.blinkRed();
+    ESP_LOGE(TAG, "Error while calling stopContinuousMeasurement.");
+    return;
+  }
+  int16_t error_frc = stcc4.performForcedRecalibration(referenceCo2Level, correction);
+  if (error_frc != NO_ERROR) {
+    ESP_LOGE(TAG, "Error while calling performForcedRecalibration.");
+  }
+  error = stcc4.startContinuousMeasurement();
+  if (error != NO_ERROR) {
+    ESP_LOGE(TAG, "Error while calling startContinuousMeasurement.");
+  }
   frcRequested = false;
+  if (error_frc != NO_ERROR||error != NO_ERROR) {
+    led.blinkRed();
+    return;
+  }
   ESP_LOGI(TAG, "FRC completed with correction value: %d", correction);
+  led.blinkGreen();
 }
 
 /**
