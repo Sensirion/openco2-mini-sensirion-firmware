@@ -17,8 +17,8 @@ LedUtils led;
 
 bool frcRequested = false;
 int16_t stcc4Co2 = 0;
-float stcc4Temperature = 0.0;
-float stcc4Humidity = 0.0;
+float stcc4PcbTemperature, ambientTemperature = 0.0;
+float stcc4PcbHumidity, ambientHumidity = 0.0;
 uint16_t stcc4Status = 0;
 
 static int64_t lastMeasurementTimeMs = 0;
@@ -148,8 +148,8 @@ void setupBleServer() {
  * @return NO_ERROR on success, otherwise the STCC4 driver error code.
  */
 int16_t measureAndUpdate() {
-  const int16_t error = stcc4.readMeasurement(stcc4Co2, stcc4Temperature,
-                                              stcc4Humidity, stcc4Status);
+  const int16_t error = stcc4.readMeasurement(stcc4Co2, stcc4PcbTemperature,
+                                              stcc4PcbHumidity, stcc4Status);
   if (error != NO_ERROR) {
     char errormessage[128];
     errorToString(error, errormessage, sizeof(errormessage));
@@ -159,13 +159,15 @@ int16_t measureAndUpdate() {
         error, errormessage);
     return error;
   }
-
   lastMeasurementTimeMs = millis();
 
+  ambientTemperature = stcc4PcbTemperature + T_COMP;
+  ambientHumidity = stcc4PcbHumidity * exp(M * TN * ((stcc4PcbTemperature - T2) / ((TN + stcc4PcbTemperature) * (TN + ambientTemperature))));;
+
   uptBleServer.writeValueToCurrentSample(
-      stcc4Temperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
+      ambientTemperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
   uptBleServer.writeValueToCurrentSample(
-      stcc4Humidity, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
+      ambientHumidity, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
   uptBleServer.writeValueToCurrentSample(
       stcc4Co2, core::SignalType::CO2_PARTS_PER_MILLION);
   uptBleServer.commitSample();

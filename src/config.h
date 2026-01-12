@@ -19,6 +19,12 @@
 #define STCC4_CONNECTION_TIMEOUT_MS 5000
 #define STCC4_MEASURE_CHECK_MS 100
 
+// COMPENSATION
+#define T_COMP -11.5f
+#define M 17.62f
+#define TN 243.21f
+
+
 // NO_ERROR
 #ifdef NO_ERROR
 #undef NO_ERROR
