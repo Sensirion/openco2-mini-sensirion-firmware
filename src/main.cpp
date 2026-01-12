@@ -104,6 +104,7 @@ void setupStcc4Measurement() {
     return;
   }
 }
+
 /**
  * Initialize and start the BLE server and services used by MyAmbience.
  *
@@ -116,17 +117,16 @@ void setupStcc4Measurement() {
 void setupBleServer() {
   const String name =
       persist.getString("alt-device-name", BLE_DEFAULT_DEVICE_NAME);
-
-  uptBleServer.setDefaultConnectionTimeout(30000);
-  lib.setPreferredConnectionInterval(20, 1000);
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
   settingsBleService.setAltDeviceName(name.c_str());
   settingsBleService.setEnableWifiSettings(false);
   settingsBleService.registerDeviceNameChangeCallback(
       nameChangeRequestCallback);
+
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.registerBleServiceProvider(bleConnectService);
+  
   uptBleServer.begin();
   ESP_LOGI(TAG, "Setup done. Device is advertised with name = %s",
            name.c_str());
@@ -177,7 +177,7 @@ int16_t measureAndUpdate() {
 }
 
 /**
- * Enter light sleep until the next measurement, if safe to do so.
+ * Enter light sleep for a while, if safe to do so.
  *
  * Conditions
  * - Skips sleeping when there are connected BLE devices or when the
@@ -188,10 +188,10 @@ void checkAndSleep(const bool hasError) {
     return;
   }
 
-  // Sleep until the next measurement is ready
-  constexpr uint64_t sleepTimeMs =
-      STCC4_MEASUREMENT_INTERVAL_MS - STCC4_MEASURE_CHECK_MS;
-  esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);
+  // Wake up once in between 2 measurements to handle BLE events
+  constexpr uint64_t sleepDurationMs =
+      STCC4_MEASUREMENT_INTERVAL_MS/2 - STCC4_MEASURE_CHECK_MS;
+  esp_sleep_enable_timer_wakeup(sleepDurationMs * 1000);
   esp_light_sleep_start();
 }
 
