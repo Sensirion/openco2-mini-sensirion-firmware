@@ -17,8 +17,8 @@ LedUtils led;
 
 bool frcRequested = false;
 int16_t stcc4Co2 = 0;
-float stcc4Temperature = 0.0;
-float stcc4Humidity = 0.0;
+float stcc4PcbTemperature, ambientTemperature = 0.0;
+float stcc4PcbHumidity, ambientHumidity = 0.0;
 uint16_t stcc4Status = 0;
 
 static int64_t lastMeasurementTimeMs = 0;
@@ -104,6 +104,7 @@ void setupStcc4Measurement() {
     return;
   }
 }
+
 /**
  * Initialize and start the BLE server and services used by MyAmbience.
  *
@@ -116,17 +117,16 @@ void setupStcc4Measurement() {
 void setupBleServer() {
   const String name =
       persist.getString("alt-device-name", BLE_DEFAULT_DEVICE_NAME);
-
-  uptBleServer.setDefaultConnectionTimeout(30000);
-  lib.setPreferredConnectionInterval(20, 1000);
   frcBleService.registerFrcRequestCallback(frcRequestCallback);
   settingsBleService.setAltDeviceName(name.c_str());
   settingsBleService.setEnableWifiSettings(false);
   settingsBleService.registerDeviceNameChangeCallback(
       nameChangeRequestCallback);
+
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.registerBleServiceProvider(bleConnectService);
+  
   uptBleServer.begin();
   ESP_LOGI(TAG, "Setup done. Device is advertised with name = %s",
            name.c_str());
@@ -148,8 +148,8 @@ void setupBleServer() {
  * @return NO_ERROR on success, otherwise the STCC4 driver error code.
  */
 int16_t measureAndUpdate() {
-  const int16_t error = stcc4.readMeasurement(stcc4Co2, stcc4Temperature,
-                                              stcc4Humidity, stcc4Status);
+  const int16_t error = stcc4.readMeasurement(stcc4Co2, stcc4PcbTemperature,
+                                              stcc4PcbHumidity, stcc4Status);
   if (error != NO_ERROR) {
     char errormessage[128];
     errorToString(error, errormessage, sizeof(errormessage));
@@ -159,13 +159,15 @@ int16_t measureAndUpdate() {
         error, errormessage);
     return error;
   }
-
   lastMeasurementTimeMs = millis();
 
+  ambientTemperature = stcc4PcbTemperature + T_COMP;
+  ambientHumidity = stcc4PcbHumidity * exp(M * TN * ((stcc4PcbTemperature - T2) / ((TN + stcc4PcbTemperature) * (TN + ambientTemperature))));;
+
   uptBleServer.writeValueToCurrentSample(
-      stcc4Temperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
+      ambientTemperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
   uptBleServer.writeValueToCurrentSample(
-      stcc4Humidity, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
+      ambientHumidity, core::SignalType::RELATIVE_HUMIDITY_PERCENTAGE);
   uptBleServer.writeValueToCurrentSample(
       stcc4Co2, core::SignalType::CO2_PARTS_PER_MILLION);
   uptBleServer.commitSample();
@@ -175,7 +177,7 @@ int16_t measureAndUpdate() {
 }
 
 /**
- * Enter light sleep until the next measurement, if safe to do so.
+ * Enter light sleep for a while, if safe to do so.
  *
  * Conditions
  * - Skips sleeping when there are connected BLE devices or when the
@@ -186,10 +188,10 @@ void checkAndSleep(const bool hasError) {
     return;
   }
 
-  // Sleep until the next measurement is ready
-  constexpr uint64_t sleepTimeMs =
-      STCC4_MEASUREMENT_INTERVAL_MS - STCC4_MEASURE_CHECK_MS;
-  esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);
+  // Wake up once in between 2 measurements to handle BLE events
+  constexpr uint64_t sleepDurationMs =
+      STCC4_MEASUREMENT_INTERVAL_MS/2 - STCC4_MEASURE_CHECK_MS;
+  esp_sleep_enable_timer_wakeup(sleepDurationMs * 1000);
   esp_light_sleep_start();
 }
 
@@ -208,9 +210,27 @@ void frcRequestCallback(const int16_t referenceCo2Level) {
   ESP_LOGI(TAG, "FRC requested...");
   frcRequested = true;
   int16_t correction;
-  stcc4.performForcedRecalibration(referenceCo2Level, correction);
+  int16_t error = stcc4.stopContinuousMeasurement();
+  if (error != NO_ERROR) {
+    led.blinkRed();
+    ESP_LOGE(TAG, "Error while calling stopContinuousMeasurement.");
+    return;
+  }
+  int16_t error_frc = stcc4.performForcedRecalibration(referenceCo2Level, correction);
+  if (error_frc != NO_ERROR) {
+    ESP_LOGE(TAG, "Error while calling performForcedRecalibration.");
+  }
+  error = stcc4.startContinuousMeasurement();
+  if (error != NO_ERROR) {
+    ESP_LOGE(TAG, "Error while calling startContinuousMeasurement.");
+  }
   frcRequested = false;
+  if (error_frc != NO_ERROR||error != NO_ERROR) {
+    led.blinkRed();
+    return;
+  }
   ESP_LOGI(TAG, "FRC completed with correction value: %d", correction);
+  led.blinkGreen();
 }
 
 /**
