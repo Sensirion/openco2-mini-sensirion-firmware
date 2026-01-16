@@ -177,7 +177,7 @@ int16_t measureAndUpdate() {
 }
 
 /**
- * Enter light sleep for a while, if safe to do so.
+ * Enter light sleep until next measurement, if safe to do so.
  *
  * Conditions
  * - Skips sleeping when there are connected BLE devices or when the
@@ -188,9 +188,8 @@ void checkAndSleep(const bool hasError) {
     return;
   }
 
-  // Wake up once in between 2 measurements to handle BLE events
   constexpr uint64_t sleepDurationMs =
-      STCC4_MEASUREMENT_INTERVAL_MS/2 - STCC4_MEASURE_CHECK_MS;
+      STCC4_MEASUREMENT_INTERVAL_MS - STCC4_MEASURE_CHECK_MS;
   esp_sleep_enable_timer_wakeup(sleepDurationMs * 1000);
   esp_light_sleep_start();
 }
