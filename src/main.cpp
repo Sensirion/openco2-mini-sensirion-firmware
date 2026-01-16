@@ -1,11 +1,14 @@
 #include <Preferences.h>
 #include <SensirionI2cStcc4.h>
 
-#include "BleConnectService.h"
-#include "FrcBleService.h"
 #include "LedUtils.h"
+
 #include "SensirionUptBleServer.h"
-#include "SettingsBleService.h"
+#include "bleServices/SettingsBleService.h"
+#include "bleServices/FrcBleService.h"
+#include "bleServices/DeviceInformationBleService.h"
+#include "BleConnectService.h"
+
 #include "config.h"
 
 using namespace sensirion::upt;
@@ -26,6 +29,7 @@ static int64_t lastMeasurementTimeMs = 0;
 ble_server::NimBLELibraryWrapper lib;
 ble_server::FrcBleService frcBleService(lib);
 ble_server::SettingsBleService settingsBleService(lib);
+ble_server::DeviceInformationBleService deviceInfoService(lib);
 ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 ble_server::BleConnectService bleConnectService(lib, led);
 
@@ -123,9 +127,14 @@ void setupBleServer() {
   settingsBleService.registerDeviceNameChangeCallback(
       nameChangeRequestCallback);
 
+  deviceInfoService.setManufacturerName("davidkreidler");
+  deviceInfoService.setModelNumber("OpenCO2 Mini");
+  deviceInfoService.setFirmwareRevision(FIRMWARE_VERSION);
+
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.registerBleServiceProvider(bleConnectService);
+  uptBleServer.registerBleServiceProvider(deviceInfoService);
   
   uptBleServer.begin();
   ESP_LOGI(TAG, "Setup done. Device is advertised with name = %s",

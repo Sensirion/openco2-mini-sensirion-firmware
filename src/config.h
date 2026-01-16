@@ -1,5 +1,7 @@
 #pragma once
 
+#define FIRMWARE_VERSION "1.0.0"
+
 //  GPIO
 #define BUTTON GPIO_NUM_0
 #define SCL_PIN GPIO_NUM_13
