@@ -37,7 +37,7 @@ void setupStcc4Measurement();
 void setupBleServer();
 
 void setup() {
-  delay(1000); // wait for serial
+ setCpuFrequencyMhz(80);
 
   // Setup I2C, LED and Persistence
   Wire.begin(SDA_PIN, SCL_PIN);
