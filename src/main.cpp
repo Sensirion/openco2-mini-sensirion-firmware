@@ -1,11 +1,15 @@
 #include <Preferences.h>
 #include <SensirionI2cStcc4.h>
+#include "Button2.h"
 
-#include "BleConnectService.h"
-#include "FrcBleService.h"
 #include "LedUtils.h"
+
 #include "SensirionUptBleServer.h"
-#include "SettingsBleService.h"
+#include "bleServices/SettingsBleService.h"
+#include "bleServices/FrcBleService.h"
+#include "bleServices/DeviceInformationBleService.h"
+#include "BleConnectService.h"
+
 #include "config.h"
 
 using namespace sensirion::upt;
@@ -14,6 +18,7 @@ static auto constexpr TAG = "MAIN";
 SensirionI2cStcc4 stcc4;
 Preferences persist;
 LedUtils led;
+Button2 button;
 
 bool frcRequested = false;
 int16_t stcc4Co2 = 0;
@@ -26,10 +31,12 @@ static int64_t lastMeasurementTimeMs = 0;
 ble_server::NimBLELibraryWrapper lib;
 ble_server::FrcBleService frcBleService(lib);
 ble_server::SettingsBleService settingsBleService(lib);
+ble_server::DeviceInformationBleService deviceInfoService(lib);
 ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 ble_server::BleConnectService bleConnectService(lib, led);
 
 void frcRequestCallback(int16_t referenceCo2Level);
+void buttonLongPressHandler(Button2 &btn);
 void nameChangeRequestCallback(const std::string &newName);
 int16_t measureAndUpdate();
 void checkAndSleep(bool hasError);
@@ -37,13 +44,18 @@ void setupStcc4Measurement();
 void setupBleServer();
 
 void setup() {
-  delay(1000); // wait for serial
+ setCpuFrequencyMhz(80);
 
   // Setup I2C, LED and Persistence
   Wire.begin(SDA_PIN, SCL_PIN);
   stcc4.begin(Wire, STCC4_I2C_ADDR_64);
   persist.begin("ble-settings", false);
   led.begin();
+
+  // Setup button
+  button.begin(BUTTON_PIN, INPUT_PULLUP);
+  button.setLongClickTime(LONG_PRESS_DURATION_S * 1000);
+  button.setLongClickDetectedHandler(buttonLongPressHandler);
 
   // initialize measurement for STCC4
   setupStcc4Measurement();
@@ -58,13 +70,18 @@ void setup() {
 void loop() {
   int16_t error = NO_ERROR;
   if (millis() - lastMeasurementTimeMs >= STCC4_MEASUREMENT_INTERVAL_MS &&
-      !frcRequested) {
+      !frcRequested && !button.isPressed()) {
     error = measureAndUpdate();
   }
 
   // handle download requests
-  uptBleServer.handleDownload();
-  delay(STCC4_MEASURE_CHECK_MS);
+  if (!button.isPressed()){
+    uptBleServer.handleDownload();
+    delay(STCC4_MEASURE_CHECK_MS);
+  }
+  
+  // handle button events
+  button.loop();
 
   // go to sleep if necessary
   checkAndSleep(error != NO_ERROR);
@@ -123,9 +140,14 @@ void setupBleServer() {
   settingsBleService.registerDeviceNameChangeCallback(
       nameChangeRequestCallback);
 
+  deviceInfoService.setManufacturerName("davidkreidler");
+  deviceInfoService.setModelNumber("OpenCO2 Mini");
+  deviceInfoService.setFirmwareRevision(FIRMWARE_VERSION);
+
   uptBleServer.registerBleServiceProvider(frcBleService);
   uptBleServer.registerBleServiceProvider(settingsBleService);
   uptBleServer.registerBleServiceProvider(bleConnectService);
+  uptBleServer.registerBleServiceProvider(deviceInfoService);
   
   uptBleServer.begin();
   ESP_LOGI(TAG, "Setup done. Device is advertised with name = %s",
@@ -177,20 +199,19 @@ int16_t measureAndUpdate() {
 }
 
 /**
- * Enter light sleep for a while, if safe to do so.
+ * Enter light sleep until next measurement, if safe to do so.
  *
  * Conditions
  * - Skips sleeping when there are connected BLE devices or when the
  *   last measurement resulted in an error (to allow quick retry/handling).
  */
 void checkAndSleep(const bool hasError) {
-  if (uptBleServer.hasConnectedDevices() || hasError) {
+  if (uptBleServer.hasConnectedDevices() || hasError || button.isPressed()) {
     return;
   }
 
-  // Wake up once in between 2 measurements to handle BLE events
   constexpr uint64_t sleepDurationMs =
-      STCC4_MEASUREMENT_INTERVAL_MS/2 - STCC4_MEASURE_CHECK_MS;
+      STCC4_MEASUREMENT_INTERVAL_MS - STCC4_MEASURE_CHECK_MS;
   esp_sleep_enable_timer_wakeup(sleepDurationMs * 1000);
   esp_light_sleep_start();
 }
@@ -245,4 +266,9 @@ void nameChangeRequestCallback(const std::string &newName) {
            newName.c_str());
 
   persist.putString("alt-device-name", newName.c_str());
+}
+
+void buttonLongPressHandler(Button2 &btn) {
+  led.setToStaticWhite();
+  frcRequestCallback(420);
 }
