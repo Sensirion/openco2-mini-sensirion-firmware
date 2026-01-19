@@ -1,5 +1,6 @@
 #include <Preferences.h>
 #include <SensirionI2cStcc4.h>
+#include "Button2.h"
 
 #include "LedUtils.h"
 
@@ -17,6 +18,7 @@ static auto constexpr TAG = "MAIN";
 SensirionI2cStcc4 stcc4;
 Preferences persist;
 LedUtils led;
+Button2 button;
 
 bool frcRequested = false;
 int16_t stcc4Co2 = 0;
@@ -34,6 +36,7 @@ ble_server::UptBleServer uptBleServer(lib, core::T_RH_CO2_ALT);
 ble_server::BleConnectService bleConnectService(lib, led);
 
 void frcRequestCallback(int16_t referenceCo2Level);
+void buttonLongPressHandler(Button2 &btn);
 void nameChangeRequestCallback(const std::string &newName);
 int16_t measureAndUpdate();
 void checkAndSleep(bool hasError);
@@ -49,6 +52,11 @@ void setup() {
   persist.begin("ble-settings", false);
   led.begin();
 
+  // Setup button
+  button.begin(BUTTON_PIN, INPUT_PULLUP);
+  button.setLongClickTime(LONG_PRESS_DURATION_S * 1000);
+  button.setLongClickDetectedHandler(buttonLongPressHandler);
+
   // initialize measurement for STCC4
   setupStcc4Measurement();
 
@@ -62,13 +70,18 @@ void setup() {
 void loop() {
   int16_t error = NO_ERROR;
   if (millis() - lastMeasurementTimeMs >= STCC4_MEASUREMENT_INTERVAL_MS &&
-      !frcRequested) {
+      !frcRequested && !button.isPressed()) {
     error = measureAndUpdate();
   }
 
   // handle download requests
-  uptBleServer.handleDownload();
-  delay(STCC4_MEASURE_CHECK_MS);
+  if (!button.isPressed()){
+    uptBleServer.handleDownload();
+    delay(STCC4_MEASURE_CHECK_MS);
+  }
+  
+  // handle button events
+  button.loop();
 
   // go to sleep if necessary
   checkAndSleep(error != NO_ERROR);
@@ -193,7 +206,7 @@ int16_t measureAndUpdate() {
  *   last measurement resulted in an error (to allow quick retry/handling).
  */
 void checkAndSleep(const bool hasError) {
-  if (uptBleServer.hasConnectedDevices() || hasError) {
+  if (uptBleServer.hasConnectedDevices() || hasError || button.isPressed()) {
     return;
   }
 
@@ -253,4 +266,9 @@ void nameChangeRequestCallback(const std::string &newName) {
            newName.c_str());
 
   persist.putString("alt-device-name", newName.c_str());
+}
+
+void buttonLongPressHandler(Button2 &btn) {
+  led.setToStaticWhite();
+  frcRequestCallback(420);
 }
