@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.1"
 
 //  GPIO
 #define BUTTON_PIN GPIO_NUM_0
