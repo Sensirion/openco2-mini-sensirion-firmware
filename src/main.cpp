@@ -184,7 +184,11 @@ int16_t measureAndUpdate() {
   lastMeasurementTimeMs = millis();
 
   ambientTemperature = stcc4PcbTemperature + T_COMP;
-  ambientHumidity = stcc4PcbHumidity * exp(M * TN * ((stcc4PcbTemperature - T2) / ((TN + stcc4PcbTemperature) * (TN + ambientTemperature))));;
+  ambientHumidity = stcc4PcbHumidity * exp(M * TN * ((stcc4PcbTemperature - ambientTemperature) / ((TN + stcc4PcbTemperature) * (TN + ambientTemperature))));
+  
+  if (ambientHumidity > 100.0) {
+    ambientHumidity = 100.0;
+  }
 
   uptBleServer.writeValueToCurrentSample(
       ambientTemperature, core::SignalType::TEMPERATURE_DEGREES_CELSIUS);
