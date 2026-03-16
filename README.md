@@ -10,8 +10,19 @@ This firmware has a more restricted feature-set than the original firmware, the 
     - Custom name support
 - LED colors synced with MyAmbience alerts.
 
-## Built using Sensirion libraries
+### Built using Sensirion libraries
 The firmware is built around the official [STCC4 driver](https://github.com/Sensirion/arduino-i2c-stcc4) and the "[UPT BLE server](https://github.com/Sensirion/arduino-upt-ble-server)" library.
+
+## Updating your OpenCO2Mini firmware
+To update your OpenCO2Mini firmware you can follow the steps below:
+1. Download the binary of the latest release [here](https://github.com/Sensirion/openco2-mini-sensirion-firmware/releases)
+2. Open the online programmer of ESPBoards.dev available [here](https://www.espboards.dev/tools/program/) (or similar)
+3. Click `Connect to ESP` and chose the your device in the list.
+4. Select `Flash firmware`
+5. Add the `.bin` file downloaded at step 1 and enter the Application address `0x10000` (**not 0x1000 !** Which is the bootloader address.)
+6. Click `Program` button and wait for the upload to complete.
+7. Once completed, the device can be power cycled by plugging it out and back in.
+8. You are done.
 
 ## Development
 Development is done using PlatformIO.
